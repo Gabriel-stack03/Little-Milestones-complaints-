@@ -115,6 +115,7 @@ export default function App() {
 
   // Run on mount
   useEffect(() => {
+    document.title = 'Little Milestones Complaints';
     fetchData();
   }, []);
 
