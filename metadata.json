@@ -1,0 +1,6 @@
+{
+  "name": "Intervention Specialist Complaint System",
+  "description": "A full-stack system for parents to submit session complaints and for supervisors to monitor, analyze with AI, and resolve them.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
