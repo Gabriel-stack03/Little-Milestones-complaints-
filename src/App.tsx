@@ -117,8 +117,8 @@ export default function App() {
 
   const handleVerifyPasscode = (e: React.FormEvent) => {
     e.preventDefault();
-    // Use standard 1234 passcode
-    if (passcode.trim() === '1234') {
+    // Security PIN
+    if (passcode.trim() === '2003') {
       setIsSupervisorUnlocked(true);
       sessionStorage.setItem('supervisor_unlocked', 'true');
       setShowPasscodeModal(false);
