@@ -37,6 +37,57 @@ export default function App() {
   const [passcodeError, setPasscodeError] = useState<string | null>(null);
 
   // Fetch all complaints and emails from full-stack Express server
+  // Multi-click secret counter on the logo
+  const [logoClickCount, setLogoClickCount] = useState(0);
+
+  // Hidden keyboard shortcuts & URL parameter check for supervisors
+  useEffect(() => {
+    // 1. Check for URL parameter e.g., ?admin=1 or ?staff=1
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('admin') === '1' || params.get('staff') === '1' || params.get('supervisor') === '1') {
+      if (!isSupervisorUnlocked) {
+        setShowPasscodeModal(true);
+      }
+    }
+
+    // 2. Keyboard shortcut: Ctrl+Shift+S, Cmd+Shift+S, or Alt+S
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.shiftKey && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') || (e.altKey && e.key.toLowerCase() === 's')) {
+        e.preventDefault();
+        if (isSupervisorUnlocked) {
+          setActiveView(prev => prev === 'supervisor' ? 'parent' : 'supervisor');
+        } else {
+          setShowPasscodeModal(true);
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isSupervisorUnlocked]);
+
+  // Handle discreet logo triple-click
+  const handleLogoClick = () => {
+    if (isSupervisorUnlocked) {
+      setActiveView(activeView === 'parent' ? 'supervisor' : 'parent');
+      return;
+    }
+
+    setLogoClickCount(prev => {
+      const next = prev + 1;
+      if (next >= 3) {
+        setShowPasscodeModal(true);
+        return 0;
+      }
+      return next;
+    });
+
+    // Reset click count after 2.5 seconds of inactivity
+    setTimeout(() => {
+      setLogoClickCount(0);
+    }, 2500);
+  };
+
   const fetchData = async () => {
     try {
       setAppError(null);
@@ -121,6 +172,7 @@ export default function App() {
     if (passcode.trim() === '2003') {
       setIsSupervisorUnlocked(true);
       sessionStorage.setItem('supervisor_unlocked', 'true');
+      sessionStorage.setItem('supervisor_auth', 'true');
       setShowPasscodeModal(false);
       setPasscode('');
       setPasscodeError(null);
@@ -133,6 +185,7 @@ export default function App() {
   const handleLockSupervisor = () => {
     setIsSupervisorUnlocked(false);
     sessionStorage.removeItem('supervisor_unlocked');
+    sessionStorage.removeItem('supervisor_auth');
     setActiveView('parent');
   };
 
@@ -144,9 +197,13 @@ export default function App() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex items-center justify-between h-16">
             
-            {/* System Logo */}
-            <div className="flex items-center space-x-2.5">
-              <div className="p-2 bg-slate-900 text-white rounded-xl">
+            {/* System Logo (With discreet staff triple-click trigger) */}
+            <div 
+              onClick={handleLogoClick}
+              className="flex items-center space-x-2.5 cursor-pointer select-none group"
+              title="LittleMilestones Feedback Portal"
+            >
+              <div className="p-2 bg-slate-900 text-white rounded-xl group-hover:bg-slate-800 transition-colors">
                 <HeartHandshake className="w-5 h-5 text-sky-400" />
               </div>
               <div>
@@ -154,12 +211,12 @@ export default function App() {
                   LittleMilestones
                 </span>
                 <span className="text-[9px] uppercase font-bold tracking-wider text-slate-400 block -mt-1 font-mono">
-                  Specialist Complaint Manager
+                  Specialist Feedback Portal
                 </span>
               </div>
             </div>
 
-            {/* Portal Tab Switcher (Only visible to authenticated supervisors) */}
+            {/* Portal Tab Switcher (Only visible once authenticated as supervisor) */}
             {isSupervisorUnlocked && (
               <div className="flex items-center space-x-3">
                 <nav className="flex space-x-1 bg-slate-100 p-1 rounded-xl">
@@ -263,32 +320,14 @@ export default function App() {
           </div>
           <div className="flex items-center space-x-3 font-mono text-[10px]">
             <span>ENV: Node container</span>
-            <span>•</span>
-            <span>DATABASE: server-side local storage</span>
-            <span>•</span>
-            <button
-              onClick={() => {
-                if (isSupervisorUnlocked) {
-                  setActiveView(activeView === 'supervisor' ? 'parent' : 'supervisor');
-                } else {
-                  setShowPasscodeModal(true);
-                }
-              }}
-              className="flex items-center space-x-1 text-slate-400 hover:text-slate-600 font-semibold transition-colors focus:outline-none cursor-pointer"
-              title="Staff Access Portal"
+            <span 
+              onDoubleClick={() => setShowPasscodeModal(true)} 
+              className="cursor-default select-none opacity-40 hover:opacity-100 transition-opacity"
+              title="QA"
             >
-              {isSupervisorUnlocked ? (
-                <>
-                  <Unlock className="w-3 h-3 text-emerald-500" />
-                  <span className="text-emerald-600 font-medium">Staff View</span>
-                </>
-              ) : (
-                <>
-                  <Lock className="w-3 h-3 text-slate-300" />
-                  <span className="hover:underline">Staff Access</span>
-                </>
-              )}
-            </button>
+              •
+            </span>
+            <span>DATABASE: PostgreSQL & persistent storage</span>
           </div>
         </div>
       </footer>

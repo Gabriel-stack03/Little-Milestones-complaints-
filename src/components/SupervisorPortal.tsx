@@ -47,7 +47,7 @@ export default function SupervisorPortal({
   // Authentication State
   const [passcode, setPasscode] = useState('');
   const [isAuthenticated, setIsAuthenticated] = useState(() => {
-    return sessionStorage.getItem('supervisor_auth') === 'true';
+    return sessionStorage.getItem('supervisor_auth') === 'true' || sessionStorage.getItem('supervisor_unlocked') === 'true';
   });
   const [authError, setAuthError] = useState('');
 
@@ -75,9 +75,10 @@ export default function SupervisorPortal({
   // Authenticate Handler
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
-    if (passcode === 'admin123') {
+    if (passcode.trim() === '2003') {
       setIsAuthenticated(true);
       sessionStorage.setItem('supervisor_auth', 'true');
+      sessionStorage.setItem('supervisor_unlocked', 'true');
       setAuthError('');
     } else {
       setAuthError('Incorrect passcode. Please try again.');
@@ -87,6 +88,7 @@ export default function SupervisorPortal({
   const handleLogout = () => {
     setIsAuthenticated(false);
     sessionStorage.removeItem('supervisor_auth');
+    sessionStorage.removeItem('supervisor_unlocked');
     setPasscode('');
   };
 
@@ -255,13 +257,6 @@ export default function SupervisorPortal({
             >
               Sign In
             </button>
-
-            {/* Helper Credential Tag */}
-            <div className="text-center pt-2">
-              <span className="inline-flex items-center px-2 py-1 rounded bg-sky-50 border border-sky-100 text-sky-700 font-mono text-[10px] uppercase font-bold">
-                Access Code: admin123
-              </span>
-            </div>
           </form>
         </div>
       </div>

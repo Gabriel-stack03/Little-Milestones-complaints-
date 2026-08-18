@@ -9,6 +9,7 @@ import fs from 'fs';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI, Type } from '@google/genai';
 import { Complaint, SimulatedEmail, ComplaintStatus, ComplaintSeverity } from './src/types.js';
+import { initPgDatabase, dbService } from './src/db.js';
 
 // Setup Data Persistence
 const DATA_DIR = path.join(process.cwd(), 'data');
@@ -159,22 +160,53 @@ async function startServer() {
 
   app.use(express.json());
 
+  // Initialize PostgreSQL database if DATABASE_URL is available
+  await initPgDatabase(initialComplaints);
+
   // API Route: Reset database (optional/helpful testing button)
-  app.post('/api/reset', (req, res) => {
-    complaints = [...initialComplaints];
-    emails = [];
-    saveData();
-    res.json({ message: 'Database reset to default template items.', complaints, emails });
+  app.post('/api/reset', async (req, res) => {
+    try {
+      complaints = [...initialComplaints];
+      emails = [];
+      saveData();
+
+      if (dbService.isPgActive()) {
+        await dbService.resetDatabase(initialComplaints);
+      }
+
+      res.json({ message: 'Database reset to default template items.', complaints, emails });
+    } catch (err: any) {
+      console.error('Error resetting database:', err);
+      res.status(500).json({ error: 'Failed to reset database.' });
+    }
   });
 
   // API Route: Get all complaints
-  app.get('/api/complaints', (req, res) => {
-    res.json(complaints);
+  app.get('/api/complaints', async (req, res) => {
+    try {
+      if (dbService.isPgActive()) {
+        const dbComplaints = await dbService.getAllComplaints();
+        return res.json(dbComplaints);
+      }
+      res.json(complaints);
+    } catch (err: any) {
+      console.error('Error fetching complaints from DB, using fallback:', err);
+      res.json(complaints);
+    }
   });
 
   // API Route: Get all emails (our Simulated outbox)
-  app.get('/api/emails', (req, res) => {
-    res.json(emails);
+  app.get('/api/emails', async (req, res) => {
+    try {
+      if (dbService.isPgActive()) {
+        const dbEmails = await dbService.getAllEmails();
+        return res.json(dbEmails);
+      }
+      res.json(emails);
+    } catch (err: any) {
+      console.error('Error fetching emails from DB, using fallback:', err);
+      res.json(emails);
+    }
   });
 
   // API Route: Submit new complaint
@@ -409,6 +441,18 @@ Return your response strictly in the following JSON schema:
       
       saveData();
 
+      // Persist to PostgreSQL if active
+      if (dbService.isPgActive()) {
+        try {
+          await dbService.insertComplaint(newComplaint);
+          await dbService.insertEmail(parentEmailLog);
+          await dbService.insertEmail(supervisorEmailLog);
+          console.log(`[Database] Persisted complaint ${id} and associated email logs to PostgreSQL.`);
+        } catch (dbErr) {
+          console.error('[Database] Failed to write complaint to PostgreSQL:', dbErr);
+        }
+      }
+
       // 6. Optional: Trigger real Resend emails (if API key is present)
       const isSupervisorEmail = parentEmail.toLowerCase().trim() === 'gcontreras@ednovate.org';
 
@@ -447,7 +491,7 @@ Return your response strictly in the following JSON schema:
   });
 
   // API Route: Update complaint status and supervisor notes
-  app.put('/api/complaints/:id/status', (req, res) => {
+  app.put('/api/complaints/:id/status', async (req, res) => {
     try {
       const { id } = req.params;
       const { status, supervisorNotes } = req.body;
@@ -456,19 +500,32 @@ Return your response strictly in the following JSON schema:
         return res.status(400).json({ error: 'Missing status update value.' });
       }
 
+      // Update in PostgreSQL if active
+      let updatedDbComplaint = null;
+      if (dbService.isPgActive()) {
+        try {
+          updatedDbComplaint = await dbService.updateComplaintStatus(id, status as ComplaintStatus, supervisorNotes);
+        } catch (dbErr) {
+          console.error('[Database] Failed to update complaint status in PostgreSQL:', dbErr);
+        }
+      }
+
       const index = complaints.findIndex(c => c.id === id);
-      if (index === -1) {
+      if (index !== -1) {
+        complaints[index].status = status as ComplaintStatus;
+        if (supervisorNotes !== undefined) {
+          complaints[index].supervisorNotes = supervisorNotes;
+        }
+        saveData();
+      }
+
+      const finalComplaint = updatedDbComplaint || (index !== -1 ? complaints[index] : null);
+
+      if (!finalComplaint) {
         return res.status(404).json({ error: 'Complaint not found.' });
       }
 
-      // Maintain notes or overwrite if provided
-      complaints[index].status = status as ComplaintStatus;
-      if (supervisorNotes !== undefined) {
-        complaints[index].supervisorNotes = supervisorNotes;
-      }
-
-      saveData();
-      res.json({ message: 'Complaint status updated.', complaint: complaints[index] });
+      res.json({ message: 'Complaint status updated.', complaint: finalComplaint });
 
     } catch (err: any) {
       console.error('Error updating status:', err);
