@@ -8,6 +8,7 @@ import path from 'path';
 import fs from 'fs';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI, Type } from '@google/genai';
+import nodemailer from 'nodemailer';
 import { Complaint, SimulatedEmail, ComplaintStatus, ComplaintSeverity } from './src/types.js';
 import { initPgDatabase, dbService } from './src/db.js';
 
@@ -116,42 +117,93 @@ if (apiKey && apiKey !== 'MY_GEMINI_API_KEY') {
   console.log('No valid GEMINI_API_KEY detected. Using intelligent fallback local templates.');
 }
 
-async function sendRealEmailWithResend(to: string, subject: string, bodyText: string) {
-  const apiKey = process.env.RESEND_API_KEY;
-  if (!apiKey || apiKey.trim() === '') {
-    console.log(`[Resend Sim] Skipped sending real email (No RESEND_API_KEY). To: ${to}, Subject: ${subject}`);
-    return { success: false, error: 'No RESEND_API_KEY configured.' };
+// Reusable SMTP Transporter (for standard Gmail, Google Workspace, or custom SMTP)
+let smtpTransporter: nodemailer.Transporter | null = null;
+function getSmtpTransporter(): nodemailer.Transporter | null {
+  if (process.env.SMTP_USER && process.env.SMTP_PASS) {
+    if (!smtpTransporter) {
+      smtpTransporter = nodemailer.createTransport({
+        host: process.env.SMTP_HOST || 'smtp.gmail.com',
+        port: Number(process.env.SMTP_PORT) || 587,
+        secure: process.env.SMTP_SECURE === 'true' || Number(process.env.SMTP_PORT) === 465,
+        auth: {
+          user: process.env.SMTP_USER,
+          pass: process.env.SMTP_PASS
+        }
+      });
+    }
+    return smtpTransporter;
+  }
+  return null;
+}
+
+/**
+ * Universal real email dispatcher:
+ * 1. Checks if SMTP (Gmail/Google Workspace/custom SMTP) is configured.
+ * 2. If not, checks if RESEND_API_KEY is configured.
+ * 3. Delivers directly to the exact target address (parentEmail or supervisorEmail).
+ */
+async function dispatchRealEmail(to: string, subject: string, bodyText: string) {
+  if (!to || !to.includes('@')) {
+    console.warn(`[Email Dispatcher] Invalid recipient email address: "${to}". Skipping.`);
+    return { success: false, error: 'Invalid recipient email' };
   }
 
-  try {
-    const response = await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        from: 'onboarding@resend.dev',
-        to: [to],
+  // 1. Try SMTP if configured (Works with ANY email address with no sandbox restrictions)
+  const transporter = getSmtpTransporter();
+  if (transporter) {
+    try {
+      const fromAddress = process.env.SMTP_FROM || process.env.SMTP_USER || 'no-reply@littlemilestones.org';
+      const info = await transporter.sendMail({
+        from: `"LittleMilestones QA" <${fromAddress}>`,
+        to: to,
         subject: subject,
         text: bodyText
-      })
-    });
-
-    const data = await response.json() as any;
-    if (!response.ok) {
-      console.error('Resend API Error details:', data);
-      if (data && (data.name === 'validation_error' || data.message?.toLowerCase().includes('onboarding') || data.message?.toLowerCase().includes('restrict'))) {
-        console.warn('[Resend Sandbox Notice] This error usually happens because onboarding@resend.dev can only send to your own registered Resend account email address on the free tier. We logged the error, but the application continues normally using simulated logs.');
-      }
-      return { success: false, error: data };
+      });
+      console.log(`[SMTP Success] Delivered email to ${to}. Message ID: ${info.messageId}`);
+      return { success: true, messageId: info.messageId, provider: 'smtp' };
+    } catch (smtpErr: any) {
+      console.error(`[SMTP Error] Failed to send email to ${to}:`, smtpErr.message || smtpErr);
     }
-    console.log(`[Resend Success] Real email sent to ${to}. Message ID: ${data.id}`);
-    return { success: true, id: data.id };
-  } catch (err) {
-    console.error('Failed to dispatch real email via Resend:', err);
-    return { success: false, error: err };
   }
+
+  // 2. Try Resend if configured
+  const resendApiKey = process.env.RESEND_API_KEY;
+  if (resendApiKey && resendApiKey.trim() !== '') {
+    try {
+      const fromEmail = process.env.RESEND_FROM_EMAIL || process.env.EMAIL_FROM || 'onboarding@resend.dev';
+      const response = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${resendApiKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          from: fromEmail.includes('<') ? fromEmail : `LittleMilestones <${fromEmail}>`,
+          to: [to],
+          subject: subject,
+          text: bodyText
+        })
+      });
+
+      const data = await response.json() as any;
+      if (!response.ok) {
+        console.error(`[Resend Error] Failed to deliver to ${to}:`, data);
+        if (data && (data.name === 'validation_error' || data.message?.toLowerCase().includes('onboarding') || data.message?.toLowerCase().includes('restrict'))) {
+          console.warn('[Resend Domain Tip] When using Resend free onboarding@resend.dev, Resend restricts delivery to your registered account email. To send to ANY parent email, verify your custom domain at resend.com/domains and set RESEND_FROM_EMAIL="support@yourdomain.com", or configure SMTP_USER & SMTP_PASS.');
+        }
+        return { success: false, error: data, provider: 'resend' };
+      }
+      console.log(`[Resend Success] Real email sent directly to ${to}. Message ID: ${data.id}`);
+      return { success: true, id: data.id, provider: 'resend' };
+    } catch (resendErr: any) {
+      console.error(`[Resend Network Error] Failed to send to ${to}:`, resendErr.message || resendErr);
+      return { success: false, error: resendErr, provider: 'resend' };
+    }
+  }
+
+  console.log(`[Email Notice] Neither SMTP nor RESEND_API_KEY is configured. Simulated email logged for ${to}: "${subject}"`);
+  return { success: false, error: 'No live email provider configured (logged to portal outbox).' };
 }
 
 async function startServer() {
@@ -453,30 +505,13 @@ Return your response strictly in the following JSON schema:
         }
       }
 
-      // 6. Optional: Trigger real Resend emails (if API key is present)
-      const isSupervisorEmail = parentEmail.toLowerCase().trim() === 'gcontreras@ednovate.org';
+      // 6. Deliver real emails to Parent and Supervisor
+      console.log(`[Email Dispatch] Sending parent receipt to: ${parentEmail}`);
+      await dispatchRealEmail(parentEmail, analysis.parentEmailSubject, analysis.parentEmailBody);
 
-      if (isSupervisorEmail) {
-        // Parent email is the supervisor's email - send parent receipt directly (will succeed)
-        await sendRealEmailWithResend('gcontreras@ednovate.org', analysis.parentEmailSubject, analysis.parentEmailBody);
-      } else {
-        // Attempt to send to the actual input parent email
-        const parentRes = await sendRealEmailWithResend(parentEmail, analysis.parentEmailSubject, analysis.parentEmailBody);
-        
-        // If it failed because of Sandbox constraints (or if parentEmail is a dummy like parent@email.com),
-        // forward a copy of the parent receipt to the verified supervisor email so they can still see it in their inbox!
-        if (!parentRes.success) {
-          console.log(`[Resend Sandbox Fallback] Forwarding copy of Parent Receipt to verified supervisor address: gcontreras@ednovate.org`);
-          await sendRealEmailWithResend(
-            'gcontreras@ednovate.org', 
-            `[Parent Receipt Copy for ${parentEmail}] ${analysis.parentEmailSubject}`, 
-            `--- SANDBOX COPY FOR PARENT (${parentEmail}) ---\n\n${analysis.parentEmailBody}`
-          );
-        }
-      }
-
-      // Always send the supervisor alert to gcontreras@ednovate.org
-      await sendRealEmailWithResend('gcontreras@ednovate.org', analysis.supervisorEmailSubject, analysis.supervisorEmailBody);
+      const supervisorRecipient = process.env.SUPERVISOR_EMAIL || 'gcontreras@ednovate.org';
+      console.log(`[Email Dispatch] Sending supervisor alert to: ${supervisorRecipient}`);
+      await dispatchRealEmail(supervisorRecipient, analysis.supervisorEmailSubject, analysis.supervisorEmailBody);
 
       res.status(201).json({
         message: 'Complaint submitted successfully.',
